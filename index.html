@@ -1687,8 +1687,25 @@
     if (e.key==='Enter') sendUrl();
   });
 
+  // ── State init ──
+  function initState() {
+    try {
+      songs = getSongs();
+      const q = getQueue();
+      queueData = q.reduce((acc, item) => { acc[item.id] = item; return acc; }, {});
+      renderQueue();
+      renderPlaylist();
+      renderManage();
+      renderHistory();
+      const cur = lsGet(LS_CURRENT);
+      if (cur) { currentUrl = cur.url; updateNowPlaying(cur.url); }
+      log(`initState完了: songs=${Object.keys(songs).length} queue=${q.length}`, 'ok');
+    } catch(e) {
+      log(`initState失敗: ${e.message}`, 'err');
+    }
+  }
+
   // Init
-  // Init state from localStorage
   initState();
 
   // P2P mode init
