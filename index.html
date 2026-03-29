@@ -721,8 +721,10 @@
     lsSet(LS_QUEUE, q);
     queueData = q.reduce((acc, item) => { acc[item.id] = item; return acc; }, {});
     renderQueue();
+    log(`saveQueue: ${q.length}曲 isReceiver=${isReceiver} isPlayingNow=${isPlayingNow} isHost=${isHost}`, 'info');
     if (isReceiver && q.length > 0 && !isPlayingNow) {
       const item = q[0];
+      log(`自動再生開始: ${item.url}`, 'ok');
       playFromQueue(item.id, item.url);
     }
   }
@@ -787,25 +789,33 @@
   function handleMessage(data) {
     log(`受信: ${data.type}`, 'info');
     if (data.type === 'enqueue') {
-      // ゲストから曲追加
+      // ゲストから曲追加（ホストのみ処理）
       const q = getQueue();
       const already = q.some(i => i.url === data.url);
-      if (already) return;
+      if (already) { log('重複スキップ', 'info'); return; }
       const newItem = { id: Date.now() + Math.random().toString(36).slice(2), url: data.url, ts: Date.now() };
       q.push(newItem);
+      log(`キュー追加: ${data.url} isReceiver=${isReceiver} isPlayingNow=${isPlayingNow}`, 'ok');
+      // saveQueueが自動再生もトリガーする
       saveQueue(q);
       // 全ゲストに同期
       broadcast({ type: 'queue_sync', queue: q });
+
     } else if (data.type === 'queue_sync') {
-      // ホストからキュー同期
-      saveQueue(data.queue);
+      // ゲスト側: ホストからのキュー同期（表示のみ、再生はしない）
+      lsSet(LS_QUEUE, data.queue);
+      queueData = data.queue.reduce((acc, item) => { acc[item.id] = item; return acc; }, {});
+      renderQueue();
+      log(`キュー同期: ${data.queue.length}曲`, 'info');
+
     } else if (data.type === 'current_sync') {
-      // ホストから再生中同期
       lsSet(LS_CURRENT, data.current);
       if (data.current) updateNowPlaying(data.current.url);
+      log(`再生中同期: ${data.current?.url}`, 'info');
+
     } else if (data.type === 'songs_sync') {
-      // ホストからプレイリスト同期
       saveSongs(data.songs);
+      log(`プレイリスト同期: ${Object.keys(data.songs).length}曲`, 'info');
     }
   }
 
