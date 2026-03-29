@@ -981,8 +981,8 @@
 
   function onPlayerStateChange(event) {
     const s = event.data;
-    // event.targetがプレイヤー本体。ここから時間や長さを取得する
-    const playerTarget = event.target; 
+    const playerTarget = event.target;
+    log(`YT状態変化: ${s} (1=再生,0=終了,2=一時停止,-1=未開始)`, 'info');
 
     isPlayingNow = (s === YT.PlayerState.PLAYING);
 
@@ -1027,6 +1027,20 @@
       events: {
         onReady: (e) => {
           ytPlayerReady = true;
+          log('YT Player準備完了', 'ok');
+          // 1秒ごとにプレイヤー状態をポーリング（APIイベントの補完）
+          setInterval(() => {
+            if (!ytPlayerReady || !ytPlayer) return;
+            try {
+              const state = ytPlayer.getPlayerState();
+              // ENDED=0, PAUSED=2, UNSTARTED=-1
+              if (state === 0 && isPlayingNow) {
+                log('ポーリング: 終了検知 → 次曲', 'ok');
+                isPlayingNow = false;
+                onVideoEnded();
+              }
+            } catch(e) {}
+          }, 1000);
         },
         onStateChange: onPlayerStateChange,
         onError: (e) => {
