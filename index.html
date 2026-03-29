@@ -973,71 +973,93 @@
   document.addEventListener('touchstart', () => { userInteracted = true; }, { once: true });
   document.addEventListener('click', () => { userInteracted = true; }, { once: true });
 
-  // YT IFrame Player API
+  // ── 再生管理（タイマー方式）──
   let isPlayingNow = false;
+  let playbackTimer = null;    // 次曲タイマー
+  let playbackStart = null;    // 再生開始時刻
+  let playbackDuration = null; // 動画の長さ（秒）
+
+  // YouTube oEmbed APIから動画の長さを取得
+  async function getVideoDuration(vid) {
+    try {
+      // YouTube Data APIなしで長さを取得する方法:
+      // page取得は無理なのでデフォルト値を使う
+      // 代わりにYT Player APIのgetDuration()を使う
+      if (ytPlayerReady && ytPlayer && typeof ytPlayer.getDuration === 'function') {
+        // プレイヤーが準備できてれば直接取得
+        let dur = ytPlayer.getDuration();
+        // まだ0の場合は少し待つ
+        if (dur === 0) {
+          await new Promise(r => setTimeout(r, 2000));
+          dur = ytPlayer.getDuration();
+        }
+        if (dur > 0) return dur;
+      }
+    } catch(e) {}
+    return null; // 取得できなかった
+  }
+
+  // タイマーベースの再生終了検知
+  async function startPlaybackTimer(vid) {
+    if (playbackTimer) clearTimeout(playbackTimer);
+
+    // 3秒待ってから長さを取得（プレイヤーが読み込まれるまで）
+    await new Promise(r => setTimeout(r, 3000));
+    const dur = await getVideoDuration(vid);
+
+    if (dur && dur > 0) {
+      playbackDuration = dur;
+      playbackStart = Date.now();
+      log(`動画長さ取得: ${Math.round(dur)}秒`, 'ok');
+
+      // 残り1.5秒前にタイマー発火
+      const waitMs = (dur - 1.5) * 1000;
+      playbackTimer = setTimeout(() => {
+        log('タイマー: 終了 → 次曲', 'ok');
+        if (isPlayingNow) onVideoEnded();
+      }, Math.max(waitMs, 1000));
+    } else {
+      // 長さ取得失敗 → 0.5秒ごとにポーリング
+      log('長さ取得失敗 → ポーリングで監視', 'info');
+      const poll = setInterval(() => {
+        if (!isPlayingNow) { clearInterval(poll); return; }
+        try {
+          const state = ytPlayer?.getPlayerState?.();
+          const cur = ytPlayer?.getCurrentTime?.();
+          const d = ytPlayer?.getDuration?.();
+          if (state === 0) { clearInterval(poll); onVideoEnded(); return; }
+          if (d > 0 && (d - cur) < 1.5) { clearInterval(poll); onVideoEnded(); return; }
+        } catch(e) {}
+      }, 500);
+      playbackTimer = poll;
+    }
+  }
+
+  // YT IFrame Player API（イベント取得できれば使う、できなくてもタイマーで動く）
   let ytPlayer = null;
   let ytPlayerReady = false;
-  let skipTimer = null;
-
-  // シンプルなポーリング方式で再生終了を検知
-  // IFrame APIのイベントは不安定なのでgetPlayerState()で毎秒確認
-  let pollingInterval = null;
-
-  function startPolling() {
-    if (pollingInterval) clearInterval(pollingInterval);
-    pollingInterval = setInterval(() => {
-      if (!ytPlayer || !ytPlayerReady) return;
-      try {
-        const state = ytPlayer.getPlayerState();
-        // 0=ENDED, 1=PLAYING, 2=PAUSED, 3=BUFFERING, -1=UNSTARTED
-        if (state === 1) {
-          isPlayingNow = true;
-          // 残り時間チェック
-          const cur = ytPlayer.getCurrentTime();
-          const dur = ytPlayer.getDuration();
-          if (dur > 0 && (dur - cur) < 1.5) {
-            log(`残り${(dur-cur).toFixed(1)}秒 → 先回りスキップ`, 'ok');
-            clearInterval(pollingInterval);
-            pollingInterval = null;
-            onVideoEnded();
-          }
-        } else if (state === 0) {
-          log('ポーリング: 終了検知', 'ok');
-          clearInterval(pollingInterval);
-          pollingInterval = null;
-          if (isPlayingNow) onVideoEnded();
-        }
-      } catch(e) { log(`ポーリングエラー: ${e.message}`, 'err'); }
-    }, 500);
-  }
 
   window.onYouTubeIframeAPIReady = function() {
     ytPlayer = new YT.Player('ytIframe', {
       height: '100%', width: '100%',
       playerVars: { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 },
       events: {
-        onReady: () => {
-          ytPlayerReady = true;
-          log('YT Player準備完了', 'ok');
-        },
+        onReady: () => { ytPlayerReady = true; log('YT Player準備完了', 'ok'); },
         onStateChange: (e) => {
-          log(`YT状態変化: ${e.data}`, 'info');
-          isPlayingNow = (e.data === 1);
-          if (e.data === 1) startPolling();
-          if (e.data === 0 && isPlayingNow) { isPlayingNow = false; onVideoEnded(); }
+          log(`YT状態: ${e.data}`, 'info');
+          if (e.data === 1) isPlayingNow = true; // PLAYING
+          if (e.data === 0 && isPlayingNow) { isPlayingNow = false; onVideoEnded(); } // ENDED
         },
-        onError: (e) => {
-          log(`YTエラー: ${e.data} → 次曲`, 'err');
-          onVideoEnded();
-        }
+        onError: (e) => { log(`YTエラー: ${e.data}`, 'err'); onVideoEnded(); }
       }
     });
   };
 
   function onVideoEnded() {
+    if (playbackTimer) { clearTimeout(playbackTimer); clearInterval(playbackTimer); playbackTimer = null; }
     isPlayingNow = false;
     currentUrl = null;
-    log('onVideoEnded呼び出し', 'ok');
+    log('次の曲へ...', 'ok');
     const arr = Object.entries(queueData).sort((a,b) => a[1].ts - b[1].ts);
     if (arr.length > 0) {
       const [nid, nitem] = arr[0];
@@ -1069,21 +1091,17 @@
       const playerEl = document.getElementById('ytPlayer');
       playerEl.style.display = 'block';
       setStopBtn(true);
+      isPlayingNow = true;
       if (!userInteracted) showToast('▶ タップして再生を開始', '');
-      log(`openUrl: ${url} ytPlayerReady=${ytPlayerReady}`, 'info');
+      log(`openUrl: vid=${vid} ytPlayerReady=${ytPlayerReady}`, 'info');
       if (ytPlayerReady && ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
         ytPlayer.loadVideoById(vid);
-        // ポーリング開始（APIイベントが来ない場合の保険）
-        setTimeout(startPolling, 3000);
       } else {
-        // フォールバック: src方式
         document.getElementById('ytIframe').src =
           `https://www.youtube.com/embed/${vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
-        // src方式でもポーリング開始
-        setTimeout(() => {
-          if (!ytPlayerReady) startPolling();
-        }, 5000);
       }
+      // タイマー方式で終了検知（APIイベントに頼らない）
+      startPlaybackTimer(vid);
     } else {
       window.open(url, '_blank');
     }
@@ -1103,8 +1121,7 @@
     document.body.style.backgroundColor = '';
     isPlayingNow = false;
     currentUrl = null;
-    if (skipTimer) { clearInterval(skipTimer); skipTimer = null; }
-    if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
+    if (playbackTimer) { clearTimeout(playbackTimer); clearInterval(playbackTimer); playbackTimer = null; }
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'none';
       navigator.mediaSession.metadata = null;
