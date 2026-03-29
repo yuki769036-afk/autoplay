@@ -432,6 +432,26 @@
     }
     .edit-modal-overlay.show .edit-modal-sheet { transform: translateY(0); }
 
+    /* ── Debug ── */
+    .debug-overlay {
+      position: fixed; bottom: 70px; left: 10px; right: 10px;
+      background: rgba(0,0,0,0.9); border: 1px solid #333;
+      border-radius: 10px; padding: 10px; z-index: 999;
+      max-height: 220px; overflow-y: auto; display: none;
+      font-family: monospace; font-size: 0.6rem; line-height: 1.6;
+    }
+    .debug-overlay.show { display: block; }
+    .debug-line { color: #aaa; border-bottom: 1px solid #1a1a1a; padding: 1px 0; }
+    .debug-line.ok { color: #47ff8a; }
+    .debug-line.err { color: #ff4747; }
+    .debug-line.info { color: #e8ff47; }
+    .debug-toggle {
+      position: fixed; bottom: 24px; right: 16px;
+      background: #1a1a1a; border: 1px solid #333; border-radius: 100px;
+      color: #666; font-size: 0.7rem; padding: 5px 10px;
+      cursor: pointer; z-index: 1000;
+    }
+
     /* ── Toast ── */
     .toast {
       position: fixed; bottom: calc(var(--safe-bottom) + 20px); left: 50%;
@@ -638,9 +658,40 @@
   </div>
 </div>
 
+<!-- DEBUG -->
+<div class="debug-overlay" id="debugOverlay"></div>
+<button class="debug-toggle" onclick="toggleDebug()">🐛</button>
 <div class="toast" id="toast"></div>
 
 <script>
+  // ── グローバルエラーキャッチ ──
+  window.onerror = function(msg, src, line, col, err) {
+    showDebug(`❌ ${msg} (${line}:${col})`, 'err');
+    return false;
+  };
+  window.onunhandledrejection = function(e) {
+    showDebug(`❌ Promise: ${e.reason}`, 'err');
+  };
+
+  let _debugLines = [];
+  function showDebug(msg, type='') {
+    _debugLines.unshift({ msg, type, time: new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) });
+    if (_debugLines.length > 40) _debugLines.pop();
+    const el = document.getElementById('debugOverlay');
+    if (el) {
+      el.innerHTML = _debugLines.map(d =>
+        `<div class="debug-line${d.type?' '+d.type:''}">[${d.time}] ${d.msg}</div>`
+      ).join('');
+    }
+    console.log('[AP]', msg);
+  }
+  function log(msg, type='') { showDebug(msg, type); }
+  function toggleDebug() {
+    const el = document.getElementById('debugOverlay');
+    if (el) el.classList.toggle('show');
+  }
+  window.toggleDebug = toggleDebug;
+
   // ══════════════════════════════════════════
   // PeerJS P2P 通信
   // ══════════════════════════════════════════
@@ -818,15 +869,15 @@
       toggle.textContent = '📱 送信モード';
       toggle.className = 'mode-toggle receiver';
       switchTab('receiver');
-      // ホストとして起動
+      log('受信モード→ホスト起動', 'info');
       if (!peer) initHost();
     } else {
       toggle.textContent = '🚗 受信モード';
       toggle.className = 'mode-toggle';
       dot.className = 'status-dot';
       switchTab('send');
-      // ゲストとして接続（URLにhost=があれば）
       const hostId = new URLSearchParams(location.search).get('host');
+      log(`送信モード hostId=${hostId||'なし'}`, 'info');
       if (hostId && !peer) connectToHost(hostId);
     }
   }
@@ -1017,27 +1068,6 @@
         document.getElementById('ytIframe').src =
           `https://www.youtube.com/embed/${vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
       }
-    } else {
-      window.open(url, '_blank');
-    }
-  } else {
-        // fallback: YT APIが初期化前でもsrc方式で再生
-        // enablejsapi=1でAPIが後から繋がる場合もある
-        document.getElementById('ytIframe').src =
-          `https://www.youtube.com/embed/${vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
-
-        // src方式のフォールバック時はpostMessageでENDED検知
-        window.addEventListener('message', function onMsg(e) {
-          try {
-            const data = JSON.parse(e.data);
-            if (data.event === 'onStateChange' && data.info === 0) {
-              onVideoEnded();
-              window.removeEventListener('message', onMsg);
-            }
-          } catch(err) {}
-        });
-      }
-      startWatchdog();
     } else {
       window.open(url, '_blank');
     }
