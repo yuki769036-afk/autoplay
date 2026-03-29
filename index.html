@@ -979,45 +979,36 @@
   let ytPlayerReady = false;
   let skipTimer = null;
 
-  function onPlayerStateChange(event) {
-    const s = event.data;
-    const playerTarget = event.target;
-    log(`YT状態変化: ${s} (1=再生,0=終了,2=一時停止,-1=未開始)`, 'info');
+  // シンプルなポーリング方式で再生終了を検知
+  // IFrame APIのイベントは不安定なのでgetPlayerState()で毎秒確認
+  let pollingInterval = null;
 
-    isPlayingNow = (s === YT.PlayerState.PLAYING);
-
-    if (!isReceiver) return;
-
-    if (s === YT.PlayerState.PLAYING) {
-      if (skipTimer) clearInterval(skipTimer);
-      
-      // 0.5秒おきに監視するタイマー
-      skipTimer = setInterval(() => {
-        // APIの仕様通り、playerTargetから時間を取得する
-        if (playerTarget && typeof playerTarget.getCurrentTime === 'function') {
-          const cur = playerTarget.getCurrentTime();
-          const dur = playerTarget.getDuration();
-          
-          // 残り1.5秒を切ったら先回りスキップ
+  function startPolling() {
+    if (pollingInterval) clearInterval(pollingInterval);
+    pollingInterval = setInterval(() => {
+      if (!ytPlayer || !ytPlayerReady) return;
+      try {
+        const state = ytPlayer.getPlayerState();
+        // 0=ENDED, 1=PLAYING, 2=PAUSED, 3=BUFFERING, -1=UNSTARTED
+        if (state === 1) {
+          isPlayingNow = true;
+          // 残り時間チェック
+          const cur = ytPlayer.getCurrentTime();
+          const dur = ytPlayer.getDuration();
           if (dur > 0 && (dur - cur) < 1.5) {
-            console.log("先回りスキップ実行！");
-            clearInterval(skipTimer);
-            skipNext();
+            log(`残り${(dur-cur).toFixed(1)}秒 → 先回りスキップ`, 'ok');
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+            onVideoEnded();
           }
+        } else if (state === 0) {
+          log('ポーリング: 終了検知', 'ok');
+          clearInterval(pollingInterval);
+          pollingInterval = null;
+          if (isPlayingNow) onVideoEnded();
         }
-      }, 500);
-      
-    } else {
-      if (skipTimer) {
-        clearInterval(skipTimer);
-        skipTimer = null;
-      }
-    }
-
-    if (s === YT.PlayerState.ENDED) {
-      console.log("動画終了スキップ実行！");
-      skipNext();
-    }
+      } catch(e) { log(`ポーリングエラー: ${e.message}`, 'err'); }
+    }, 500);
   }
 
   window.onYouTubeIframeAPIReady = function() {
@@ -1025,27 +1016,19 @@
       height: '100%', width: '100%',
       playerVars: { autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1 },
       events: {
-        onReady: (e) => {
+        onReady: () => {
           ytPlayerReady = true;
           log('YT Player準備完了', 'ok');
-          // 1秒ごとにプレイヤー状態をポーリング（APIイベントの補完）
-          setInterval(() => {
-            if (!ytPlayerReady || !ytPlayer) return;
-            try {
-              const state = ytPlayer.getPlayerState();
-              // ENDED=0, PAUSED=2, UNSTARTED=-1
-              if (state === 0 && isPlayingNow) {
-                log('ポーリング: 終了検知 → 次曲', 'ok');
-                isPlayingNow = false;
-                onVideoEnded();
-              }
-            } catch(e) {}
-          }, 1000);
         },
-        onStateChange: onPlayerStateChange,
+        onStateChange: (e) => {
+          log(`YT状態変化: ${e.data}`, 'info');
+          isPlayingNow = (e.data === 1);
+          if (e.data === 1) startPolling();
+          if (e.data === 0 && isPlayingNow) { isPlayingNow = false; onVideoEnded(); }
+        },
         onError: (e) => {
-          console.warn('YT Error:', e.data);
-          skipNext(); 
+          log(`YTエラー: ${e.data} → 次曲`, 'err');
+          onVideoEnded();
         }
       }
     });
@@ -1054,6 +1037,7 @@
   function onVideoEnded() {
     isPlayingNow = false;
     currentUrl = null;
+    log('onVideoEnded呼び出し', 'ok');
     const arr = Object.entries(queueData).sort((a,b) => a[1].ts - b[1].ts);
     if (arr.length > 0) {
       const [nid, nitem] = arr[0];
@@ -1086,11 +1070,19 @@
       playerEl.style.display = 'block';
       setStopBtn(true);
       if (!userInteracted) showToast('▶ タップして再生を開始', '');
+      log(`openUrl: ${url} ytPlayerReady=${ytPlayerReady}`, 'info');
       if (ytPlayerReady && ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
         ytPlayer.loadVideoById(vid);
+        // ポーリング開始（APIイベントが来ない場合の保険）
+        setTimeout(startPolling, 3000);
       } else {
+        // フォールバック: src方式
         document.getElementById('ytIframe').src =
           `https://www.youtube.com/embed/${vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
+        // src方式でもポーリング開始
+        setTimeout(() => {
+          if (!ytPlayerReady) startPolling();
+        }, 5000);
       }
     } else {
       window.open(url, '_blank');
@@ -1112,6 +1104,7 @@
     isPlayingNow = false;
     currentUrl = null;
     if (skipTimer) { clearInterval(skipTimer); skipTimer = null; }
+    if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'none';
       navigator.mediaSession.metadata = null;
